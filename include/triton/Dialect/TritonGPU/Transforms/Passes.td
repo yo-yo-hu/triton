@@ -49,6 +49,20 @@ def TritonGPUPrefetch : Pass<"tritongpu-prefetch", "mlir::ModuleOp"> {
                            "mlir::arith::ArithDialect"];
 }
 
+def TritonGPUDispatchToWarps : Pass<"tritongpu-dispatch-to-warps", "mlir::ModuleOp"> {
+  let summary = "dispatch the workload to the warps";
+
+  let description = [{
+  }];
+
+  let constructor = "mlir::createTritonGPUDispatchToWarpsPass()";
+
+  let dependentDialects = ["mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::arith::ArithDialect"];
+}
+
 def TritonGPUAccelerateMatmul : Pass<"tritongpu-accelerate-matmul", "mlir::ModuleOp"> {
   let summary = "accelerate matmul";
 

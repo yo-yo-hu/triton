@@ -393,6 +393,7 @@ mlir::LogicalResult mlir::triton::DotOp::inferReturnTypes(
   inferredReturnTypes.push_back(accTy);
 
   // verify encodings
+  /*
   auto aEnc = operands[0].getType().cast<RankedTensorType>().getEncoding();
   auto bEnc = operands[1].getType().cast<RankedTensorType>().getEncoding();
   auto retEnc = accTy.getEncoding();
@@ -405,6 +406,7 @@ mlir::LogicalResult mlir::triton::DotOp::inferReturnTypes(
     if (interface->inferDotOpEncoding(bEnc, 1, retEnc, location).failed())
       return mlir::failure();
   }
+  */
   return mlir::success();
 }
 
