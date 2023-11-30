@@ -370,6 +370,14 @@ def TT_GetProgramIdOp : TT_Op<"get_program_id", [Pure]> {
     }];
 }
 
+def TT_GetWarpIdOp : TT_Op<"get_warp_id", [Pure]> {
+    let arguments = (ins);
+
+    let results = (outs I32:$result);
+
+    let assemblyFormat = "attr-dict `:` type($result)";
+}
+
 def TT_GetNumProgramsOp : TT_Op<"get_num_programs", [Pure]> {
     let arguments = (ins I32Attr:$axis);
 

@@ -154,6 +154,9 @@ SmallVector<unsigned> getWarpsPerCTA(Attribute layout) {
       warpsPerCTA[i] *= parentWarpsPerCTA[sliceLayout.getDim()];
     return warpsPerCTA;
   }
+  if (auto dotLayout = layout.dyn_cast<DotOperandEncodingAttr>()) {
+    return getWarpsPerCTA(dotLayout.getParent());
+  }
   llvm::report_fatal_error("getWarpsPerCTA not implemented");
   return {};
 }

@@ -348,4 +348,18 @@ def TTG_AllocTensorOp : TTG_Op<"alloc_tensor", [MemoryEffects<[MemAlloc]>,  // A
   let results = (outs TT_Tensor:$result);
 }
 
+def TTG_AllocOp : TTG_Op<"alloc", [MemoryEffects<[MemAlloc]>  // Allocate shared memory
+                                                ]> {
+  let summary = "allocate tensor in memory, return the pointer";
+
+  let description = [{
+    This operation defines a tensor of a particular shape.
+    The contents of the tensor are supposed to be in shared memory.
+  }];
+
+  let assemblyFormat = [{attr-dict `:` type($result)}];
+
+  let results = (outs TT_Ptr:$result);
+}
+
 #endif
