@@ -555,6 +555,33 @@ for
 }
 
 //===----------------------------------------------------------------------===//
+// Warp Encoding
+//===----------------------------------------------------------------------===//
+
+def WarpEncodingAttr : TritonGPU_Attr<"WarpEncoding"> {
+  let mnemonic = "warp";
+
+  let description = [{
+only have 3 items: sizePerThread, threadsPerWarp, order
+all their meaning remain the same as above blocked encoding
+  }];
+
+  let parameters = (
+    ins
+    ArrayRefParameter<"unsigned">:$sizePerThread,
+    ArrayRefParameter<"unsigned">:$threadsPerWarp,
+    ArrayRefParameter<"unsigned">:$order // the fastest-changing axis first
+  );
+
+  let extraClassDeclaration = [{
+    unsigned getTotalElemsPerThread(ArrayRef<int64_t> shape, Type eltTy) const;
+    SmallVector<unsigned> getElemsPerThread(ArrayRef<int64_t> shape, Type eltTy) const;
+  }];
+
+  let hasCustomAssemblyFormat = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // MMA Layout Encoding
 //===----------------------------------------------------------------------===//
 // TODO: MMAv1 and MMAv2 should be two instances of the same class

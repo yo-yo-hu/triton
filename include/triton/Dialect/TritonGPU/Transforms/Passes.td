@@ -60,6 +60,7 @@ def TritonGPUDistributeToWarps : Pass<"tritongpu-distribute-to-warps", "mlir::Mo
   let dependentDialects = ["mlir::triton::TritonDialect",
                            "mlir::triton::gpu::TritonGPUDialect",
                            "mlir::scf::SCFDialect",
+                           "mlir::gpu::GPUDialect",
                            "mlir::arith::ArithDialect"];
 }
 

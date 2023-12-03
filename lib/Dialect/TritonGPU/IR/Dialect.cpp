@@ -49,6 +49,8 @@ unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,
     return sharedLayout.getTotalElemsPerThread(shape, eltTy);
   } else if (auto dotLayout = layout.dyn_cast<DotOperandEncodingAttr>()) {
     return dotLayout.getTotalElemsPerThread(shape, eltTy);
+  } else if (auto warpLayout = layout.dyn_cast<WarpEncodingAttr>()) {
+    return warpLayout.getTotalElemsPerThread(shape, eltTy);
   } else {
     llvm::report_fatal_error("getElemsPerThread not implemented");
     return 0;
@@ -817,6 +819,25 @@ BlockedEncodingAttr::getShapePerCTATile(ArrayRef<int64_t> tensorShape) const {
   return ::getShapePerCTATile(*this, tensorShape);
 }
 
+SmallVector<unsigned>
+WarpEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape, Type eltTy) const {
+  size_t rank = shape.size();
+  auto sizePerThread = getSizePerThread();
+  auto threadsPerWarp = getThreadsPerWarp();
+  assert(rank == sizePerThread.size() &&
+         "unexpected rank in WarpEncodingAttr::getElemsPerThread");
+  SmallVector<unsigned> elemsPerThread(rank);
+  for (size_t i = 0; i < rank; ++i) {
+    unsigned t = sizePerThread[i] * threadsPerWarp[i];
+    elemsPerThread[i] = t;
+  }
+  return elemsPerThread;
+}
+unsigned WarpEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
+                                                  Type eltTy) const {
+  return product<unsigned>(getElemsPerThread(shape, eltTy));
+}
+
 template <class T>
 SmallVector<T> SliceEncodingAttr::paddedShape(ArrayRef<T> shape) const {
   size_t rank = shape.size();
@@ -1116,6 +1137,60 @@ void BlockedEncodingAttr::print(mlir::AsmPrinter &printer) const {
           << ", CTAsPerCGA = [" << getCTALayout().getCTAsPerCGA() << "]"
           << ", CTASplitNum = [" << getCTALayout().getCTASplitNum() << "]"
           << ", CTAOrder = [" << getCTALayout().getCTAOrder() << "]"
+          << "}>";
+}
+
+//===----------------------------------------------------------------------===//
+// Warp encoding
+//===----------------------------------------------------------------------===//
+
+Attribute WarpEncodingAttr::parse(AsmParser &parser, Type type) {
+  if (parser.parseLess().failed())
+    return {};
+  // Parse the data as a dictionary
+  DictionaryAttr dict;
+  if (parser.parseAttribute(dict).failed())
+    return {};
+  if (parser.parseGreater().failed())
+    return {};
+
+  SmallVector<unsigned> sizePerThread;
+  SmallVector<unsigned> threadsPerWarp;
+  SmallVector<unsigned> order;
+
+  for (const NamedAttribute &attr : dict) {
+    if (attr.getName() == "sizePerThread") {
+      if (parseIntArrayAttr(parser, attr, sizePerThread,
+                            "number of elements per thread")
+              .failed())
+        return {};
+    } else if (attr.getName() == "threadsPerWarp") {
+      if (parseIntArrayAttr(parser, attr, threadsPerWarp,
+                            "number of threads per warp")
+              .failed())
+        return {};
+    } else if (attr.getName() == "order") {
+      if (parseIntArrayAttr(parser, attr, order, "order").failed())
+        return {};
+    } else {
+      parser.emitError(parser.getNameLoc(), "unexpected key: ")
+          << attr.getName().strref();
+      return {};
+    }
+  }
+  return parser.getChecked<WarpEncodingAttr>(parser.getContext(), sizePerThread,
+                                             threadsPerWarp, order);
+}
+
+void WarpEncodingAttr::print(mlir::AsmPrinter &printer) const {
+  auto threadsPerWarp = getThreadsPerWarp();
+  auto sizePerThread = getSizePerThread();
+  printer << "<{"
+          << "sizePerThread = [" << llvm::ArrayRef<unsigned>(sizePerThread)
+          << "]"
+          << ", threadsPerWarp = [" << llvm::ArrayRef<unsigned>(threadsPerWarp)
+          << "]"
+          << ", order = [" << getOrder() << "]"
           << "}>";
 }
 
@@ -1655,6 +1730,9 @@ public:
       return AliasResult::FinalAlias;
     } else if (auto blockedAttr = attr.dyn_cast<BlockedEncodingAttr>()) {
       os << "blocked";
+      return AliasResult::FinalAlias;
+    } else if (auto warpAttr = attr.dyn_cast<WarpEncodingAttr>()) {
+      os << "warp";
       return AliasResult::FinalAlias;
     } /* else if (auto sliceAttr = attr.dyn_cast<SliceEncodingAttr>()) {
       os << "slice";

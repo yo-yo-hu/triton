@@ -1,4 +1,5 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LogicalResult.h"
@@ -50,14 +51,31 @@ SmallVector<long> getSizePerWarp(RankedTensorType type, Attribute layout) {
   return sizePerWarp;
 }
 
+Attribute getWarpLayout(Attribute layout) {
+  auto *ctx = layout.getContext();
+  if (auto blockedLayout = dyn_cast<ttg::BlockedEncodingAttr>(layout)) {
+    auto warpLayout = ttg::WarpEncodingAttr::get(
+        ctx, blockedLayout.getSizePerThread(),
+        blockedLayout.getThreadsPerWarp(), blockedLayout.getOrder());
+    return warpLayout;
+  } else if (auto dotLayout = dyn_cast<ttg::DotOperandEncodingAttr>(layout)) {
+    auto parentLayout = getWarpLayout(dotLayout.getParent());
+    auto newDotLayout = ttg::DotOperandEncodingAttr::get(
+        ctx, dotLayout.getOpIdx(), parentLayout, dotLayout.getKWidth());
+    return newDotLayout;
+  }
+  return layout;
+}
+
 template <typename T> static T convertType(T type) { return type; }
 
 template <>
 RankedTensorType convertType<RankedTensorType>(RankedTensorType type) {
   auto layout = type.getEncoding();
   auto sizePerWarp = getSizePerWarp(type, layout);
+  auto warpLayout = getWarpLayout(layout);
   auto newType =
-      RankedTensorType::get(sizePerWarp, type.getElementType(), layout);
+      RankedTensorType::get(sizePerWarp, type.getElementType(), warpLayout);
   return newType;
 }
 
@@ -193,34 +211,34 @@ void distributeMakeTensorPtrOp(tt::MakeTensorPtrOp op, Value warpId) {
   return;
 }
 
-void distributeConvertLayoutOp(ttg::ConvertLayoutOp op, Value warpId) {
+void distributeConvertLayoutOp(ttg::ConvertLayoutOp op, Value warpId,
+                               RankedTensorType oldSrcType) {
   auto loc = op.getLoc();
   OpBuilder b(op);
   auto dstType = cast<RankedTensorType>(op.getResult().getType());
   auto convertedDstType = convertType(dstType);
   auto dstPtrType = tt::PointerType::get(convertedDstType, 3 /* shared mem*/);
-  auto currSrcType = cast<RankedTensorType>(op.getSrc().getType());
-  auto srcType = RankedTensorType::get(
-      dstType.getShape(), dstType.getElementType(), currSrcType.getEncoding());
-  auto srcPtrType = tt::PointerType::get(currSrcType, 3 /* shared mem*/);
+  auto srcPtrType =
+      tt::PointerType::get(op.getSrc().getType(), 3 /* shared mem*/);
 
-  // fixme: allocOp may carry the size info, tt::PointerType::get(srcType)
-  // fixme: set addrspace 1 instead of 3 to avoid makeTensorOp type match error
-  auto baseType = tt::PointerType::get(srcType.getElementType(), 1);
+  // fixme: allocOp may carry the size info, tt::PointerType::get(oldSrcType)
+  // fixme: set addrspace 1 instead of 3 to avoid makeTensorOp type match
+  // error
+  auto baseType = tt::PointerType::get(oldSrcType.getElementType(), 1);
   auto base = b.create<ttg::AllocOp>(loc, baseType);
   SmallVector<Value> shape;
   shape.push_back(
-      b.create<arith::ConstantIntOp>(loc, srcType.getShape()[0], 64));
+      b.create<arith::ConstantIntOp>(loc, oldSrcType.getShape()[0], 64));
   shape.push_back(
-      b.create<arith::ConstantIntOp>(loc, srcType.getShape()[1], 64));
+      b.create<arith::ConstantIntOp>(loc, oldSrcType.getShape()[1], 64));
   SmallVector<Value> strides;
   strides.push_back(
-      b.create<arith::ConstantIntOp>(loc, srcType.getShape()[1], 64));
+      b.create<arith::ConstantIntOp>(loc, oldSrcType.getShape()[1], 64));
   strides.push_back(b.create<arith::ConstantIntOp>(loc, 1, 64));
   SmallVector<Value> offsets;
   offsets.push_back(b.create<arith::ConstantIntOp>(loc, 0, 32));
   offsets.push_back(b.create<arith::ConstantIntOp>(loc, 0, 32));
-  auto srcOffsets = distributeOffset(offsets, srcType, warpId, b, loc);
+  auto srcOffsets = distributeOffset(offsets, oldSrcType, warpId, b, loc);
   Value storePtr =
       b.create<tt::MakeTensorPtrOp>(loc, srcPtrType, base, shape, strides,
                                     srcOffsets, b.getDenseI32ArrayAttr({1, 0}));
@@ -265,7 +283,15 @@ public:
     ModuleOp m = getOperation();
     for (auto func : m.getOps<tt::FuncOp>()) {
       auto b = OpBuilder::atBlockBegin(&func.getBody().front());
-      auto warpId = b.create<tt::GetWarpIdOp>(func.getLoc());
+      auto loc = func.getLoc();
+      auto subgroupId = b.create<gpu::SubgroupIdOp>(loc);
+      auto warpId =
+          b.create<arith::IndexCastOp>(loc, b.getI32Type(), subgroupId);
+      // record old type before transform
+      DenseMap<Operation *, RankedTensorType> typeMap;
+      func.walk([&](ttg::ConvertLayoutOp op) {
+        typeMap[op] = op.getSrc().getType().cast<RankedTensorType>();
+      });
       func.walk<WalkOrder::PreOrder>([&](Operation *op) {
         if (llvm::all_of(op->getResultTypes(), [&](Type type) {
               return !isa<RankedTensorType>(type) &&
@@ -279,7 +305,7 @@ public:
         else if (auto cstOp = dyn_cast<arith::ConstantOp>(op))
           distributeArithConstantOp(cstOp);
         else if (auto convertOp = dyn_cast<ttg::ConvertLayoutOp>(op))
-          distributeConvertLayoutOp(convertOp, warpId);
+          distributeConvertLayoutOp(convertOp, warpId, typeMap[convertOp]);
         else if (isa<tt::LoadOp, tt::DotOp, tt::AdvanceOp, arith::TruncFOp>(op))
           distributeGenericOp(op);
         else
